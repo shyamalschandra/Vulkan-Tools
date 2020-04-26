@@ -39,39 +39,56 @@ def main(argv):
     group.add_argument('-v', '--verify', action='store_true', help='verify repo files match generator output')
     args = parser.parse_args(argv)
 
-    gen_cmds = [[common_codegen.repo_relative('scripts/kvt_genvk.py'),
-                 '-registry', os.path.abspath(os.path.join(args.registry,  'vk.xml')),
-                 '-quiet',
-                 filename] for filename in ['vk_typemap_helper.h',
+    # output paths and the list of files in the path
+    files_to_gen = {'icd/generated' : ['vk_typemap_helper.h',
                                             'mock_icd.h',
-                                            'mock_icd.cpp']]
+                                            'mock_icd.cpp'],
+                    'vulkaninfo/generated': ['vulkaninfo.hpp']}
 
-    repo_dir = common_codegen.repo_relative('icd/generated')
+    #base directory for the source repository
+    repo_dir = common_codegen.repo_relative('')
 
-    # get directory where generators will run
+    # get directory where generators will run if needed
     if args.verify or args.incremental:
         # generate in temp directory so we can compare or copy later
         temp_obj = tempfile.TemporaryDirectory(prefix='VulkanLoader_generated_source_')
         temp_dir = temp_obj.name
-        gen_dir = temp_dir
-    else:
-        # generate directly in the repo
-        gen_dir = repo_dir
+        for path in files_to_gen.keys():
+            os.makedirs(os.path.join(temp_dir, path))
 
     # run each code generator
-    for cmd in gen_cmds:
-        print(' '.join(cmd))
-        try:
-            subprocess.check_call([sys.executable] + cmd, cwd=gen_dir)
-        except Exception as e:
-            print('ERROR:', str(e))
-            return 1
+    for path, filenames in files_to_gen.items():
+        for filename in filenames:
+            if args.verify or args.incremental:
+                output_path = os.path.join(temp_dir, path)
+            else:
+                output_path = common_codegen.repo_relative(path)
 
+            cmd = [common_codegen.repo_relative('scripts/kvt_genvk.py'),
+                '-registry', os.path.abspath(os.path.join(args.registry,  'vk.xml')),
+                '-quiet', '-directory', output_path, filename]  
+            print(' '.join(cmd))
+            try:
+                if args.verify or args.incremental:
+                    subprocess.check_call([sys.executable] + cmd, cwd=temp_dir)
+                else:
+                    subprocess.check_call([sys.executable] + cmd, cwd=repo_dir)
+                
+            except Exception as e:
+                print('ERROR:', str(e))
+                return 1
+        
     # optional post-generation steps
     if args.verify:
         # compare contents of temp dir and repo
-        temp_files = set(os.listdir(temp_dir))
-        repo_files = set(os.listdir(repo_dir))
+        temp_files = set()
+        for path in files_to_gen.keys():
+            temp_files.union(set(os.listdir(os.path.join(temp_dir, path))))
+
+        repo_files = set()
+        for path in files_to_gen.keys():
+            temp_files.union(set(os.listdir(os.path.join(repo_dir, path))))
+
         files_match = True
         for filename in sorted((temp_files | repo_files) - set(verify_exclude)):
             if filename not in repo_files:
@@ -94,13 +111,14 @@ def main(argv):
 
     elif args.incremental:
         # copy missing or differing files from temp directory to repo
-        for filename in os.listdir(temp_dir):
-            temp_filename = os.path.join(temp_dir, filename)
-            repo_filename = os.path.join(repo_dir, filename)
-            if not os.path.exists(repo_filename) or \
-               not filecmp.cmp(temp_filename, repo_filename, shallow=False):
-                print('update', repo_filename)
-                shutil.copyfile(temp_filename, repo_filename)
+        for path in files_to_gen.keys():
+            for filename in os.listdir(os.path.join(temp_dir,path)):
+                temp_filename = os.path.join(temp_dir, path, filename)
+                repo_filename = os.path.join(repo_dir, path, filename)
+                if not os.path.exists(repo_filename) or \
+                   not filecmp.cmp(temp_filename, repo_filename, shallow=False):
+                    print('update', repo_filename)
+                    shutil.copyfile(temp_filename, repo_filename)
 
     return 0
 
